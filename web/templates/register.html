@@ -3,14 +3,14 @@
 {% block nav_register %}active{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/css/register.css?v=4">
+<link rel="stylesheet" href="/static/css/register.css?v=5">
 {% endblock %}
 
 {% block content %}
 <header class="page-header">
   <div>
     <h1>Enrôler une personne</h1>
-    <p class="page-sub">5 photos guidées, sous des angles différents, pour une reconnaissance fiable.</p>
+    <p class="page-sub">{{ min_photos }} à {{ max_photos }} photos, prises avec la caméra (poses guidées) ou importées depuis vos fichiers.</p>
   </div>
 </header>
 
@@ -35,7 +35,7 @@
       </div>
 
       <div class="instruction" id="instruction" hidden>
-        <span class="instruction-step" id="instruction-step">Photo 1 sur 5</span>
+        <span class="instruction-step" id="instruction-step">Photo 1</span>
         <strong class="instruction-text" id="instruction-text">Regardez la caméra</strong>
         <span class="countdown" id="countdown" aria-hidden="true"></span>
       </div>
@@ -49,7 +49,7 @@
   </section>
 
   <!-- Formulaire -->
-  <section class="card enroll-panel" aria-label="Informations et captures">
+  <section class="card enroll-panel" aria-label="Informations et photos" data-min-photos="{{ min_photos }}" data-max-photos="{{ max_photos }}" data-people="{{ people|join('|') }}">
     <ol class="steps" aria-label="Étapes">
       <li class="step active" data-step="info"><span>1</span>Identité</li>
       <li class="step" data-step="capture"><span>2</span>Photos</li>
@@ -61,6 +61,7 @@
         <div class="label-row"><label class="label" for="name">Nom de la personne</label><span class="hint"><span id="name-len">0</span>/50</span></div>
         <input class="input" type="text" id="name" name="name" placeholder="ex : Jean Kouadio" autocomplete="off" maxlength="50" required>
         <span class="field-error" id="name-error" aria-live="polite"></span>
+        <span class="hint" id="name-exists" hidden></span>
       </div>
 
       <label class="checkbox">
@@ -71,26 +72,32 @@
       <div class="alert" id="alert" role="alert" hidden></div>
 
       <div>
-        <div class="label-row"><span class="label">Photos</span><span class="hint" id="capture-count">0/5</span></div>
+        <div class="label-row"><span class="label">Photos</span><span class="hint" id="capture-count">0/{{ max_photos }}</span></div>
         <ul class="thumbs" id="thumbs"></ul>
       </div>
 
       <div class="enroll-actions" id="actions-idle">
-        <button type="submit" class="btn btn-primary btn-lg btn-block" id="start-btn" disabled>
-          <svg class="icon"><use href="#i-camera"/></svg>Commencer les photos
-        </button>
+        <div class="source-buttons">
+          <button type="submit" class="btn btn-primary btn-lg" id="start-btn" disabled>
+            <svg class="icon"><use href="#i-camera"/></svg><span id="start-label">Prendre les photos</span>
+          </button>
+          <button type="button" class="btn btn-secondary btn-lg" id="import-btn" disabled>
+            <svg class="icon"><use href="#i-upload"/></svg><span id="import-label">Importer</span>
+          </button>
+          <input type="file" id="import-input" accept="image/jpeg,image/png,image/webp" multiple hidden>
+        </div>
         <p class="hint center" id="start-hint">Saisissez un nom et cochez l'accord pour commencer.</p>
+        <div class="enroll-actions" id="actions-review" hidden>
+          <button type="button" class="btn btn-primary btn-lg btn-block" id="save-btn" disabled>
+            <svg class="icon"><use href="#i-check"/></svg><span id="save-label">Enregistrer</span>
+          </button>
+          <button type="button" class="btn btn-ghost btn-block" id="restart-btn">
+            <svg class="icon"><use href="#i-refresh"/></svg>Tout recommencer
+          </button>
+        </div>
       </div>
       <div class="enroll-actions" id="actions-capturing" hidden>
-        <button type="button" class="btn btn-secondary btn-block" id="cancel-btn">Annuler</button>
-      </div>
-      <div class="enroll-actions" id="actions-review" hidden>
-        <button type="button" class="btn btn-primary btn-lg btn-block" id="save-btn">
-          <svg class="icon"><use href="#i-check"/></svg><span id="save-label">Enregistrer</span>
-        </button>
-        <button type="button" class="btn btn-ghost btn-block" id="restart-btn">
-          <svg class="icon"><use href="#i-refresh"/></svg>Tout recommencer
-        </button>
+        <button type="button" class="btn btn-secondary btn-block" id="cancel-btn">Arrêter les photos</button>
       </div>
     </form>
 
@@ -108,5 +115,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="/static/js/register.js?v=4"></script>
+<script src="/static/js/register.js?v=5"></script>
 {% endblock %}

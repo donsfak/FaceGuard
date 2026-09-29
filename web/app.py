@@ -7,12 +7,12 @@ Lancement (depuis le dossier web/) :
 Routes :
     GET  /                      tableau de bord des pointages
     GET  /scanner               scanner temps réel (webcam du navigateur)
-    GET  /register              enrôlement d'une nouvelle personne (5 captures)
+    GET  /register              enrôlement d'une personne (8 à 10 photos)
     GET  /people                personnes connues du système
-    POST /register-user         API d'enrôlement (multipart : name + files[])
+    POST /register-user         API d'enrôlement : 8 à 10 photos (caméra et/ou import)
     POST /people/{name}/delete  retire une personne de la base
     GET  /api/logs              pointages + statistiques en JSON (tableau de bord en direct)
-    POST /api/check-face        contrôle qualité d'une image (enrôlement guidé)
+    POST /api/check-face        contrôle qualité d'une image (caméra ou photo importée)
     GET  /people/{name}/photo   miniature du visage d'une personne
     GET  /health                état du moteur
     WS   /ws/detect             flux de reconnaissance
@@ -41,9 +41,19 @@ from core.engine import FaceEngine, choose_consistent_faces, largest_face, norma
 from database.crud import get_recent_logs, get_recent_logs_local, supabase_status  # noqa: E402
 from engine.stream import websocket_endpoint  # noqa: E402
 
-MAX_UPLOAD_FILES = 10
+# Quota d'un enrôlement : 8 à 10 photos, prises avec la caméra (poses guidées)
+# et/ou importées. Quelques photos peuvent être écartées à l'analyse (visage
+# absent, autre personne...) : il en faut au moins MIN_VALID_PHOTOS exploitables.
+MIN_PHOTOS = 8
+MAX_PHOTOS = 10
+MIN_VALID_PHOTOS = 6
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
-MIN_VALID_CAPTURES = 3
+# Photo importée : largeur minimale du visage en pixels (la règle « 16 % de
+# l'image » de la caméra n'a pas de sens pour une photo de 4000 px de large).
+MIN_IMPORT_FACE_PX = 80
+# Photo importée avec d'autres visages : acceptée si le visage principal a une
+# surface au moins 2,5 fois plus grande que le suivant.
+DOMINANT_FACE_RATIO = 2.5
 # Similarité minimale d'une capture au profil moyen des autres captures.
 SAME_PERSON_MIN_SIM = 0.35
 # Au-dessus, le nouveau visage est déjà connu sous un autre nom.
@@ -111,7 +121,12 @@ def read_scanner(request: Request):
 
 @app.get("/register", response_class=HTMLResponse)
 def read_register(request: Request):
-    return templates.TemplateResponse(request, "register.html", {})
+    # Liste des personnes connues : la page signale qu'un nom existant recevra
+    # des photos supplémentaires au lieu de créer une nouvelle personne.
+    return templates.TemplateResponse(request, "register.html", {
+        "people": sorted(app.state.engine.people()),
+        "min_photos": MIN_PHOTOS, "max_photos": MAX_PHOTOS,
+    })
 
 
 @app.get("/people", response_class=HTMLResponse)
@@ -130,8 +145,14 @@ def read_people(request: Request):
 
 # --------------------------------------------------------------------- API
 @app.post("/register-user")
-def register_user(name: str = Form(...), files: List[UploadFile] = File(...)):
-    """Enrôlement multi-captures.
+def register_user(name: str = Form(...), files: List[UploadFile] = File(...),
+                  source: str = Form("camera")):
+    """Enrôlement à partir de 8 à 10 photos : captures guidées (caméra) et/ou
+    photos importées (galerie, appareil photo, dossier). Les fichiers envoyés
+    par l'interface sont nommés camera_<n>.jpg ou import_<n>.jpg.
+
+    Si le nom existe déjà, les nouvelles photos complètent son profil, après
+    vérification qu'elles montrent bien la même personne.
 
     `def` (et non `async def`) : FastAPI exécute la fonction dans un thread,
     l'extraction des embeddings ne bloque donc pas le serveur.
@@ -141,58 +162,93 @@ def register_user(name: str = Form(...), files: List[UploadFile] = File(...)):
         clean_name = engine.canonical_name(normalize_name(name))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if len(files) > MAX_UPLOAD_FILES:
-        raise HTTPException(status_code=400, detail=f"Maximum {MAX_UPLOAD_FILES} photos.")
+    if not MIN_PHOTOS <= len(files) <= MAX_PHOTOS:
+        raise HTTPException(status_code=400,
+                            detail=f"Envoyez entre {MIN_PHOTOS} et {MAX_PHOTOS} photos ({len(files)} reçue(s)).")
 
-    faces_per_image, images = [], []
+    rejected = []                        # [{file, reason}] : renvoyé à l'interface
+    faces_per_image, images, filenames, sources = [], [], [], []
     for upload in files:
+        fname = upload.filename or "photo"
         content = upload.file.read(MAX_UPLOAD_BYTES + 1)
         if len(content) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=400, detail="Une photo dépasse 5 Mo.")
+            rejected.append({"file": fname, "reason": "fichier de plus de 5 Mo"})
+            continue
         frame = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
+            rejected.append({"file": fname, "reason": "image illisible"})
             continue
-        faces = engine.detect(frame)
-        if faces:
-            faces_per_image.append(faces)
-            images.append(frame)
+        faces = [f for f in engine.detect(frame) if f.det_score >= 0.5]
+        if not faces:
+            rejected.append({"file": fname, "reason": "aucun visage détecté"})
+            continue
+        faces_per_image.append(faces)
+        images.append(frame)
+        filenames.append(fname)
+        sources.append("import" if fname.startswith("import") or source == "import" else "web")
 
-    # Dans chaque capture on garde le visage cohérent avec les autres captures
-    # (une personne passant derrière n'est pas enrôlée par erreur).
+    # Dans chaque photo on garde le visage cohérent avec les autres photos
+    # (une personne en arrière-plan n'est pas enrôlée par erreur).
     chosen, _ = choose_consistent_faces(faces_per_image, min_sim=SAME_PERSON_MIN_SIM)
-    kept = [(e, img) for e, img in zip(chosen, images) if e is not None]
-    embeddings = [e for e, _ in kept]
-    images = [img for _, img in kept]
+    embeddings, kept = [], []
+    for emb, img, src, fname in zip(chosen, images, sources, filenames):
+        if emb is None:
+            rejected.append({"file": fname, "reason": "ne ressemble pas aux autres photos"})
+        else:
+            embeddings.append(emb)
+            kept.append((img, src))
 
-    if len(embeddings) < MIN_VALID_CAPTURES:
+    existing_count = engine.people().get(clean_name, 0)
+    minimum = MIN_VALID_PHOTOS
+    if len(embeddings) < minimum:
         raise HTTPException(
             status_code=400,
-            detail=f"Visage exploitable sur {len(embeddings)} capture(s) seulement (minimum {MIN_VALID_CAPTURES}). "
-                   "Une seule personne, face à la caméra et bien éclairée, puis recommencez.",
+            detail={"message": f"Visage exploitable sur {len(embeddings)} photo(s) seulement (minimum {minimum}). "
+                               "Utilisez des photos où la personne est nette, de face et bien éclairée.",
+                    "rejected": rejected},
         )
     mean = np.mean(embeddings, axis=0)
     mean /= np.linalg.norm(mean)
 
-    # Contrôle 2 : ce visage n'est pas déjà enregistré sous un autre nom.
-    existing, sim = engine.identify(mean)
-    if existing != config.UNKNOWN_LABEL and existing != clean_name and sim >= DUPLICATE_SIM:
-        raise HTTPException(status_code=409, detail=f"Ce visage est déjà enregistré sous le nom « {existing} » "
-                                                    f"(similarité {sim:.2f}).")
+    if existing_count:
+        # Ajout à une personne existante : les photos doivent lui ressembler.
+        sim_to_profile = engine.similarity_to_person(mean, clean_name)
+        if sim_to_profile < SAME_PERSON_MIN_SIM:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ces photos ne semblent pas montrer « {clean_name} » (similarité {sim_to_profile:.2f}). "
+                       "Vérifiez le nom ou les photos.",
+            )
+    else:
+        # Nouvelle personne : ce visage n'est pas déjà enregistré sous un autre nom.
+        existing, sim = engine.identify(mean)
+        if existing != config.UNKNOWN_LABEL and existing != clean_name and sim >= DUPLICATE_SIM:
+            raise HTTPException(status_code=409, detail=f"Ce visage est déjà enregistré sous le nom « {existing} » "
+                                                        f"(similarité {sim:.2f}).")
 
     # Les photos sont aussi rangées dans dataset/<nom>/ : un ré-encodage complet
     # (src/02_encode_faces.py) conservera donc les personnes enrôlées via le web.
     person_dir = config.DATASET_DIR / clean_name
     person_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    for i, img in enumerate(images):
-        cv2.imwrite(str(person_dir / f"{clean_name}_web_{stamp}_{i}.jpg"), img)
+    for i, (img, src) in enumerate(kept):
+        cv2.imwrite(str(person_dir / f"{clean_name}_{src}_{stamp}_{i}.jpg"), img)
 
     engine.add_person(clean_name, embeddings)  # sauvegarde .npz + mise à jour FAISS à chaud
     _thumb_cache.pop(clean_name, None)
+    total = existing_count + len(embeddings)
+    if existing_count:
+        message = f"{len(embeddings)} photo(s) ajoutée(s) au profil de {clean_name} ({total} au total)."
+    else:
+        message = f"{clean_name} enrôlé(e) avec succès ({len(embeddings)}/{len(files)} photos validées)."
     return {
         "status": "success",
         "name": clean_name,
-        "message": f"{clean_name} enrôlé(e) avec succès ({len(embeddings)}/{len(files)} captures validées).",
+        "added": len(embeddings),
+        "total": total,
+        "updated": bool(existing_count),
+        "rejected": rejected,
+        "message": message,
     }
 
 
@@ -219,8 +275,9 @@ def api_logs(limit: int = 100):
 
 
 @app.post("/api/check-face")
-def check_face(file: UploadFile = File(...)):
-    """Contrôle qualité d'une image avant capture (utilisé par l'enrôlement guidé).
+def check_face(file: UploadFile = File(...), mode: str = Form("camera")):
+    """Contrôle qualité d'une image : image de la caméra avant capture (mode
+    "camera") ou photo importée par l'utilisateur (mode "import").
 
     Retourne un statut simple + un message à afficher à l'utilisateur :
     none | multiple | too_small | too_dark | blurry | ok
@@ -231,6 +288,7 @@ def check_face(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Image illisible.")
     h, w = frame.shape[:2]
     faces = [f for f in engine.detect(frame) if f.det_score >= 0.5]
+    imported = mode == "import"
 
     def reply(status, message, face=None, **extra):
         box = [int(v) for v in face.bbox] if face is not None else None
@@ -238,22 +296,37 @@ def check_face(file: UploadFile = File(...)):
                 "frame_size": [w, h], **extra}
 
     if not faces:
-        return reply("none", "Aucun visage détecté : placez votre visage dans le cadre.")
+        return reply("none", "Aucun visage détecté." if imported
+                     else "Aucun visage détecté : placez votre visage dans le cadre.")
+    background = 0
     if len(faces) > 1:
-        return reply("multiple", "Plusieurs visages détectés : une seule personne devant la caméra.",
-                     largest_face(faces))
-    face = faces[0]
+        # Photo importée : une personne en arrière-plan est tolérée si le visage
+        # principal est nettement plus grand (l'enrôlement retient ensuite, photo
+        # par photo, le visage cohérent avec les autres photos).
+        areas = sorted(((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]), i) for i, f in enumerate(faces))
+        if not (imported and areas[-1][0] >= DOMINANT_FACE_RATIO * areas[-2][0]):
+            return reply("multiple", "Plusieurs visages de taille comparable : recadrez la photo sur la personne." if imported
+                         else "Plusieurs visages détectés : une seule personne devant la caméra.",
+                         largest_face(faces))
+        background = len(faces) - 1
+        face = faces[areas[-1][1]]
+    else:
+        face = faces[0]
     x1, y1, x2, y2 = (int(v) for v in face.bbox)
-    if (x2 - x1) < 0.16 * w:
+    if imported and (x2 - x1) < MIN_IMPORT_FACE_PX:
+        return reply("too_small", f"Visage trop petit (moins de {MIN_IMPORT_FACE_PX} pixels) : utilisez une photo plus rapprochée.", face)
+    if not imported and (x2 - x1) < 0.16 * w:
         return reply("too_small", "Approchez-vous de la caméra.", face)
     crop = cv2.cvtColor(frame[max(0, y1):y2, max(0, x1):x2], cv2.COLOR_BGR2GRAY)
     if crop.size and crop.mean() < 55:
-        return reply("too_dark", "Visage trop sombre : ajoutez de la lumière face à vous.", face)
+        return reply("too_dark", "Visage trop sombre." if imported
+                     else "Visage trop sombre : ajoutez de la lumière face à vous.", face)
     if crop.size and cv2.Laplacian(crop, cv2.CV_64F).var() < 25:
-        return reply("blurry", "Image floue : restez immobile un instant.", face)
+        return reply("blurry", "Photo floue." if imported else "Image floue : restez immobile un instant.", face)
     name, sim = engine.identify(face.normed_embedding)
     known = None if name == config.UNKNOWN_LABEL else name
-    return reply("ok", "Parfait, ne bougez plus.", face, known_as=known, similarity=round(sim, 3))
+    return reply("ok", "Photo exploitable." if imported else "Parfait, ne bougez plus.", face,
+                 known_as=known, similarity=round(sim, 3), background_faces=background)
 
 
 _thumb_cache: dict[str, bytes] = {}

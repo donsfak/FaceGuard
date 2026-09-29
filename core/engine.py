@@ -254,6 +254,19 @@ class FaceEngine:
                 self.save()
         return name
 
+    def similarity_to_person(self, embedding: np.ndarray, name: str) -> float:
+        """Similarité cosinus entre un embedding et le profil moyen d'une personne
+        (0.0 si la personne n'existe pas). Sert à vérifier qu'une photo ajoutée
+        à un profil existant montre bien la même personne."""
+        with self._db_lock:
+            idx = [i for i, n in enumerate(self.names) if n == name]
+            if not idx:
+                return 0.0
+            centroid = self.encodings[idx].mean(axis=0)
+        centroid /= np.linalg.norm(centroid)
+        query = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        return float(query @ centroid / np.linalg.norm(query))
+
     def remove_person(self, name: str, save: bool = True) -> int:
         with self._db_lock:
             keep = [i for i, n in enumerate(self.names) if n != name]

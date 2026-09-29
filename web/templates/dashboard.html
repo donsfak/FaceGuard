@@ -4,96 +4,89 @@
 
 {% block content %}
 <header class="page-header">
-    <div>
-        <h1>Historique des pointages</h1>
-        <p class="page-sub">Journal des reconnaissances — source Supabase</p>
-    </div>
-    <div class="header-actions">
-        <a href="/register" class="btn btn-secondary">+ Ajouter une personne</a>
-        <a href="/scanner" class="btn btn-primary">◎ Ouvrir le scanner live</a>
-    </div>
+  <div>
+    <h1>Tableau de bord</h1>
+    <p class="page-sub">Présences et pointages, mis à jour en direct.</p>
+  </div>
+  <div class="header-actions">
+    <span class="updated" id="updated"><span class="status-dot"></span><span id="updated-text">À jour</span></span>
+    <span class="chip" id="source-chip" title="Origine des données"><svg class="icon"><use href="#i-database"/></svg><span id="source-text"></span></span>
+    <a href="/scanner" class="btn btn-primary"><svg class="icon"><use href="#i-scan"/></svg>Ouvrir le scanner</a>
+  </div>
 </header>
 
-{% set total = logs|length %}
-{% set unique_users = logs|map(attribute='user_name')|unique|list|length if logs else 0 %}
-{% set ns = namespace(spoof_count=0) %}
-{% for log in logs %}
-    {% if "VIVANT" not in log.liveness_status %}
-        {% set ns.spoof_count = ns.spoof_count + 1 %}
-    {% endif %}
-{% endfor %}
+<div class="card notice" id="sb-banner" role="status" hidden>
+  <svg class="icon"><use href="#i-database"/></svg>
+  <div><strong>Supabase non utilisé — pointages enregistrés en local.</strong>
+    <span class="muted"> Raison : <span id="sb-reason"></span>. Diagnostic : <span class="mono">python scripts/diagnostic_supabase.py</span></span></div>
+</div>
 
 <div class="stats-row">
-    <div class="stat-card">
-        <span class="stat-label">Pointages totaux</span>
-        <span class="stat-value">{{ total }}</span>
-    </div>
-    <div class="stat-card">
-        <span class="stat-label">Personnes distinctes</span>
-        <span class="stat-value">{{ unique_users }}</span>
-    </div>
-    <div class="stat-card {% if ns.spoof_count > 0 %}stat-card-alert{% endif %}">
-        <span class="stat-label">Tentatives suspectes</span>
-        <span class="stat-value">{{ ns.spoof_count }}</span>
-    </div>
+  <div class="card stat">
+    <span class="stat-label"><svg class="icon"><use href="#i-users"/></svg>Présents aujourd'hui</span>
+    <span class="stat-value" id="stat-present">—</span>
+    <div class="meter" aria-hidden="true"><span id="stat-present-meter" style="width:0"></span></div>
+  </div>
+  <div class="card stat">
+    <span class="stat-label"><svg class="icon"><use href="#i-check"/></svg>Pointages aujourd'hui</span>
+    <span class="stat-value" id="stat-today">—</span>
+    <span class="stat-foot" id="stat-today-foot"></span>
+  </div>
+  <div class="card stat">
+    <span class="stat-label"><svg class="icon"><use href="#i-clock"/></svg>Dernier passage</span>
+    <span class="stat-value" id="stat-last" style="font-size:20px;padding-top:6px">—</span>
+    <span class="stat-foot" id="stat-last-foot"></span>
+  </div>
+  <div class="card stat" id="stat-alerts-card">
+    <span class="stat-label"><svg class="icon"><use href="#i-alert"/></svg>Alertes anti-fraude</span>
+    <span class="stat-value" id="stat-alerts">—</span>
+    <span class="stat-foot">photos ou écrans détectés</span>
+  </div>
 </div>
 
-<div class="card">
-    <div class="table-toolbar">
-        <input type="text" id="search-input" placeholder="Rechercher un nom..." class="search-input">
+<div class="dash-grid">
+  <section class="card" aria-labelledby="journal-title">
+    <div class="card-header">
+      <h2 id="journal-title">Journal des pointages</h2>
+      <span class="count-badge" id="journal-count">0</span>
     </div>
-    <div class="table-wrap">
-        <table id="logs-table">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Utilisateur</th>
-                    <th>Statut sécurité</th>
-                    <th>Similarité</th>
-                    <th>Horodatage</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% if logs %}
-                    {% for log in logs %}
-                    <tr data-name="{{ log.user_name|lower }}">
-                        <td class="cell-mono">#{{ log.id }}</td>
-                        <td class="cell-name">{{ log.user_name }}</td>
-                        <td>
-                            {% if "VIVANT" in log.liveness_status %}
-                                <span class="badge badge-ok">{{ log.liveness_status }}</span>
-                            {% else %}
-                                <span class="badge badge-alert">{{ log.liveness_status }}</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <div class="score-bar">
-                                <div class="score-fill" style="width: {{ (log.confidence_score * 100)|round(0) }}%;"></div>
-                                <span class="score-text">{{ "%.2f"|format(log.confidence_score) }}</span>
-                            </div>
-                        </td>
-                        <td class="cell-mono cell-muted">{{ log.timestamp }}</td>
-                    </tr>
-                    {% endfor %}
-                {% else %}
-                    <tr>
-                        <td colspan="5" class="empty-row">
-                            Aucun pointage enregistré pour le moment. Lancez le scanner pour tester !
-                        </td>
-                    </tr>
-                {% endif %}
-            </tbody>
-        </table>
+    <div class="toolbar">
+      <div class="input-icon">
+        <svg class="icon"><use href="#i-search"/></svg>
+        <input type="search" class="input" id="search" placeholder="Rechercher une personne" aria-label="Rechercher une personne">
+      </div>
+      <div class="segmented" role="group" aria-label="Filtrer">
+        <button type="button" data-filter="all" aria-pressed="true">Tous</button>
+        <button type="button" data-filter="ok" aria-pressed="false">Vérifiés</button>
+        <button type="button" data-filter="alert" aria-pressed="false">Alertes</button>
+      </div>
     </div>
+    <table class="table">
+      <thead><tr><th>Personne</th><th>Sécurité</th><th>Confiance</th><th>Heure</th></tr></thead>
+      <tbody id="log-body"></tbody>
+    </table>
+    <div id="log-more-wrap" style="padding:12px 20px;border-top:1px solid var(--border)" hidden>
+      <button type="button" class="btn btn-secondary btn-block" id="log-more">Afficher plus</button>
+    </div>
+    <div class="empty" id="log-empty" hidden>
+      <svg class="icon"><use href="#i-scan"/></svg>
+      <strong id="empty-title">Aucun pointage pour le moment</strong>
+      <span id="empty-text">Ouvrez le scanner et passez devant la caméra.</span>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="presence-title">
+    <div class="card-header">
+      <h2 id="presence-title">Présence du jour</h2>
+      <a class="btn btn-ghost" href="/people" style="min-height:32px;padding:4px 10px;font-size:13px">Gérer</a>
+    </div>
+    <div id="presence"></div>
+  </section>
 </div>
 
-<script>
-const searchInput = document.getElementById("search-input");
-searchInput.addEventListener("input", () => {
-    const q = searchInput.value.trim().toLowerCase();
-    document.querySelectorAll("#logs-table tbody tr[data-name]").forEach(row => {
-        row.style.display = row.dataset.name.includes(q) ? "" : "none";
-    });
-});
-</script>
+<script id="initial-data" type="application/json">{{ payload|tojson }}</script>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/dashboard.js?v=4"></script>
 {% endblock %}

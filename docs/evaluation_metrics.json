@@ -1,0 +1,66 @@
+{
+  "threshold": 0.45,
+  "knn_k": 3,
+  "det_size": 640,
+  "dataset": {
+    "personnes": 5,
+    "embeddings": 97,
+    "photos_ignorees": 3,
+    "photos_multi_visages": 66,
+    "par_personne": {
+      "delphine": 20,
+      "eslie": 20,
+      "kadi": 18,
+      "oyetola": 20,
+      "tchoupi": 19
+    }
+  },
+  "test_externe": {
+    "correct": 12,
+    "mal_reconnu": 0,
+    "non_reconnu": 0,
+    "inconnu_rejete": 0,
+    "faux_positif": 0,
+    "total": 12,
+    "sans_visage": 0,
+    "erreurs": [],
+    "confusion": {
+      "delphine": {
+        "delphine": 6
+      },
+      "tchoupi": {
+        "tchoupi": 6
+      }
+    }
+  },
+  "leave_one_out": {
+    "correct": 97,
+    "mal_reconnu": 0,
+    "non_reconnu": 0,
+    "total": 97,
+    "erreurs": []
+  },
+  "inconnus": {
+    "inconnu_rejete": 109,
+    "faux_positif": 0,
+    "total": 109,
+    "erreurs": [],
+    "similarite_max_observee": 0.339
+  },
+  "seuil": {
+    "genuine_moyenne": 0.72,
+    "impostor_moyenne": 0.062,
+    "impostor_max": 0.339,
+    "genuine_min": 0.321,
+    "eer": 0.001,
+    "seuil_eer": 0.33,
+    "far_au_seuil": 0.0,
+    "frr_au_seuil": 0.0134
+  },
+  "performance": {
+    "detection_embedding_ms_moyen": 473.9,
+    "detection_embedding_ms_median": 471.3,
+    "recherche_faiss_ms": 0.019,
+    "fps_estime": 2.1
+  }
+}

@@ -1,74 +1,95 @@
-import base64
-import time
+"""
+WebSocket temps réel : le navigateur envoie des images JPEG (data URL base64),
+le serveur répond avec la liste des visages détectés et identifiés.
+
+Corrections par rapport à la version précédente :
+  - un FaceTracker PAR connexion (avant : état partagé entre tous les clients) ;
+  - l'inférence tourne dans un thread (asyncio.to_thread) : elle ne bloque plus
+    la boucle asyncio, donc le dashboard et les autres clients restent réactifs ;
+  - un pointage n'est enregistré que si la vivacité est validée ET l'identité
+    stable (avant, les visages en "Analyse..." étaient déjà pointés).
+"""
+
 import asyncio
+import base64
+import binascii
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import cv2
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
-from engine.recognition import FaceRecognitionEngine
+
+from core.tracking import FaceTracker
 from database.crud import log_attendance
 
-# Instanciation globale du moteur IA (chargé une seule fois)
-engine = FaceRecognitionEngine(gpu=False)
-
-# Dictionnaire pour gérer le cooldown des pointages (évite le spam en BDD)
-last_logged_times = {}
 COOLDOWN_SECONDS = 10.0
+MAX_FRAME_BYTES = 2_000_000
+_last_logged: dict[str, float] = {}
+# L'écriture en base part dans un thread dédié : un Supabase lent ne ralentit pas la vidéo.
+_db_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="db")
 
-async def websocket_endpoint(websocket: WebSocket):
+
+def decode_frame(data: str):
+    """data URL 'data:image/jpeg;base64,...' -> image BGR (ou None si invalide)."""
+    if "," not in data or len(data) > MAX_FRAME_BYTES * 4 // 3 + 100:
+        return None
+    try:
+        raw = base64.b64decode(data.split(",", 1)[1], validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+
+
+def _log_if_needed(result: dict) -> bool:
+    """Enregistre un pointage si nécessaire. Retourne True si un pointage vient d'être créé
+    (le scanner l'affiche alors dans son journal en direct)."""
+    if not result["confirmed"]:
+        return False
+    name, now = result["identity"], time.time()
+    if now - _last_logged.get(name, 0.0) < COOLDOWN_SECONDS:
+        return False
+    _last_logged[name] = now
+    _db_pool.submit(_write_log, name, result["liveness"], result["similarity"])
+    return True
+
+
+def _write_log(name, liveness, similarity):
+    try:
+        log_attendance(user_name=name, liveness_status=liveness, confidence_score=similarity)
+        print(f"[DB] Pointage enregistré : {name} ({similarity:.2f})")
+    except Exception as exc:
+        print(f"[DB] Supabase indisponible, pointage gardé en CSV local : {exc}")
+
+
+async def websocket_endpoint(websocket: WebSocket, engine):
     await websocket.accept()
-    print("[INFO] Client WebSocket connecté pour l'analyse en direct.")
-    
+    tracker = FaceTracker()
+    print("[WS] Client connecté.")
+
+    def process(frame):
+        t0 = time.perf_counter()
+        results = tracker.update(engine.analyze(frame))
+        for r in results:
+            r["logged"] = _log_if_needed(r)
+        return results, (time.perf_counter() - t0) * 1000
+
     try:
         while True:
-            # Réception de la frame depuis le navigateur
             data = await websocket.receive_text()
-            
+            frame = decode_frame(data)
+            if frame is None:
+                await websocket.send_json({"faces": [], "error": "image invalide"})
+                continue
             try:
-                # 1. Validation et décodage sécurisés de l'image Base64
-                if ',' not in data:
-                    continue
-                encoded_data = data.split(',')[1]
-                nparr = np.frombuffer(base64.b64decode(encoded_data), np.uint8)
-                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                
-                if frame is None:
-                    continue
-
-                # 2. Analyse par le moteur IA
-                results = engine.process_frame(frame)
-                
-                # 3. Gestion de l'enregistrement Supabase en arrière-plan (non bloquant)
-                current_time = time.time()
-                for res in results:
-                    name = res["identity"]
-                    sim = res["similarity"]
-                    liveness = res["liveness"]
-                    
-                    if name not in ["Inconnu", "FRAUDE DETECTEE"]:
-                        last_time = last_logged_times.get(name, 0.0)
-                        if (current_time - last_time) >= COOLDOWN_SECONDS:
-                            last_logged_times[name] = current_time
-                            try:
-                                await asyncio.to_thread(
-                                    log_attendance, 
-                                    user_name=name, 
-                                    liveness_status=liveness, 
-                                    confidence_score=sim
-                                )
-                                print(f"[DB] Pointage validé et enregistré pour : {name}")
-                            except Exception as db_error:
-                                print(f"[DB WARNING] Erreur Supabase ignorée : {db_error}")
-                
-                # 4. Envoi propre des résultats au Front-End
-                await websocket.send_json({"faces": results})
-                
-            except Exception as frame_error:
-                # Filet de sécurité : si une frame spécifique plante, on l'attrape 
-                # MAIS on ne ferme pas le WebSocket ! Le flux vidéo continue.
-                print(f"[WARNING] Erreur de traitement sur une frame (ignorée) : {frame_error}")
-                await websocket.send_json({"faces": []})
-                
+                results, ms = await asyncio.to_thread(process, frame)
+                await websocket.send_json({"faces": results, "processing_ms": round(ms, 1),
+                                           "frame_size": [int(frame.shape[1]), int(frame.shape[0])]})
+            except WebSocketDisconnect:
+                raise
+            except Exception as exc:
+                # Une frame qui plante ne ferme pas la connexion : le flux continue.
+                print(f"[WS] Erreur sur une frame (ignorée) : {exc}")
+                await websocket.send_json({"faces": [], "error": "erreur de traitement"})
     except WebSocketDisconnect:
-        print("[INFO] Client déconnecté proprement.")
-    except Exception as ws_error:
-        print(f"[ERROR] Erreur critique WebSocket : {ws_error}")
+        print("[WS] Client déconnecté.")

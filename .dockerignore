@@ -1,0 +1,10 @@
+**/venv
+**/.venv
+**/__pycache__
+.git
+dataset
+dataset_test_externe
+dataset_archive
+docs
+legacy
+web/.env

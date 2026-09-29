@@ -1,10 +1,12 @@
-fastapi
-uvicorn
-supabase
-websockets
-opencv-python-headless
-faiss-cpu
-insightface
-onnxruntime
-numpy
-python-dotenv
+# Plateforme web FastAPI (serveur sans écran -> OpenCV "headless")
+fastapi>=0.110
+uvicorn[standard]>=0.29     # [standard] inclut le support WebSocket
+python-multipart>=0.0.9     # requis par FastAPI pour Form(...) / File(...) (enrôlement)
+jinja2>=3.1                 # requis par Jinja2Templates
+python-dotenv>=1.0
+supabase>=2.0               # optionnel : sans .env, les pointages vont dans docs/recognition_log.csv
+opencv-python-headless>=4.8
+insightface>=0.7.3
+onnxruntime>=1.16
+faiss-cpu>=1.7.4
+numpy>=1.24

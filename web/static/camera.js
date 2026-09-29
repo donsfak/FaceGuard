@@ -1,154 +1,350 @@
-const videoElement = document.getElementById('videoElement');
-const overlayCanvas = document.getElementById('overlayCanvas');
-const ctxOverlay = overlayCanvas.getContext('2d');
-const statusText = document.getElementById('status');
+// camera.js — scanner temps réel.
+// Le navigateur capture la webcam, envoie une image JPEG au serveur par WebSocket,
+// reçoit la liste des visages (cadre, identité, score, vivacité) et les dessine.
+(() => {
+  'use strict';
+  const { esc, avatar, fmtTime, isToday, toast, UNKNOWN, SPOOF } = window.FG;
 
-const captureCanvas = document.createElement('canvas');
-const ctxCapture = captureCanvas.getContext('2d');
+  // --- Éléments -----------------------------------------------------------
+  const $ = id => document.getElementById(id);
+  const stage = $('stage'), stageCard = $('stage-card');
+  const video = $('videoElement'), canvas = $('overlayCanvas'), ctx = canvas.getContext('2d');
+  const placeholder = $('stage-placeholder'), placeholderText = $('placeholder-text'), retryBtn = $('camera-retry');
+  const livePill = $('live-pill'), liveText = $('live-text'), metrics = $('stage-metrics');
+  const faceList = $('face-list'), faceEmpty = $('face-empty'), faceCount = $('face-count');
+  const eventList = $('event-list'), eventEmpty = $('event-empty');
+  const banner = $('welcome-banner');
+  const btnPause = $('btn-pause'), btnMirror = $('btn-mirror'), btnKps = $('btn-kps'), btnFull = $('btn-fullscreen');
 
-// Palette FaceGuard (dupliquée ici car un <canvas> ne peut pas lire les variables CSS)
-const COLOR_ACCENT = "#2DD4BF";   // identité reconnue, visage réel
-const COLOR_WARN = "#F59E0B";     // visage détecté mais Inconnu
-const COLOR_DANGER = "#EF4444";   // fraude détectée (anti-spoofing)
-const COLOR_ANALYSIS = "#60A5FA"; // vivacité en cours d'analyse (pas encore tranché)
-const COLOR_KEYPOINT = "#5EEAD4"; // points clés du visage (yeux, nez, bouche)
+  const capture = document.createElement('canvas');
+  const captureCtx = capture.getContext('2d');
 
-// Connexion WebSocket vers FastAPI
-const ws = new WebSocket(`ws://${window.location.host}/ws/detect`);
+  // Couleurs (un <canvas> ne lit pas les variables CSS)
+  const C = { ok: '#2DD4BF', pending: '#60A5FA', unknown: '#F59E0B', danger: '#EF4444', kp: '#5EEAD4', ink: '#042F2A' };
 
-let waitingForResponse = false;
-let cameraReady = false;
-let wsOpen = false;
+  // --- Préférences mémorisées ---------------------------------------------
+  const pref = (k, d) => { try { const v = localStorage.getItem('fg.' + k); return v === null ? d : v === '1'; } catch { return d; } };
+  const savePref = (k, v) => { try { localStorage.setItem('fg.' + k, v ? '1' : '0'); } catch { /* navigation privée */ } };
 
-// Centralise l'affichage du statut pour éviter que la résolution de la caméra
-// et l'ouverture du WebSocket ne s'écrasent mutuellement selon leur ordre d'arrivée.
-function updateStatus() {
-    if (wsOpen) {
-        statusText.innerText = "IA connectée et active.";
-        statusText.style.color = COLOR_ACCENT;
-    } else if (cameraReady) {
-        statusText.innerText = "Caméra active. Connexion au serveur IA...";
-        statusText.style.color = COLOR_ANALYSIS;
-    } else {
-        statusText.innerText = "Initialisation de la caméra...";
-        statusText.style.color = COLOR_ANALYSIS;
+  const state = {
+    stream: null, ws: null, wsOpen: false, waiting: false, sendTimer: null,
+    reconnectAttempts: 0, reconnectTimer: null,
+    paused: false, mirrored: pref('mirror', true), showKps: pref('kps', true),
+    lastFaces: [], respTimes: [],
+  };
+
+  // --- Statut ---------------------------------------------------------------
+  function setLive(kind, text) {
+    livePill.className = `live-pill ${kind}`;
+    liveText.textContent = text;
+  }
+
+  // --- Caméra ---------------------------------------------------------------
+  function cameraError(err) {
+    switch (err && err.name) {
+      case 'NotAllowedError': case 'SecurityError':
+        return "Accès à la caméra refusé. Autorisez-la via l'icône à gauche de l'adresse du site, puis réessayez.";
+      case 'NotFoundError': case 'OverconstrainedError':
+        return 'Aucune caméra détectée. Branchez une webcam puis réessayez.';
+      case 'NotReadableError': case 'AbortError':
+        return 'La caméra est déjà utilisée (autre onglet, page Enrôler, visio…). Fermez-la puis réessayez.';
+      default:
+        return window.isSecureContext ? `Caméra indisponible (${err && err.message})`
+          : 'La caméra exige HTTPS (ou localhost). Ouvrez le site en https://';
     }
-}
+  }
 
-// 1. Allumage de la webcam depuis le flux de navigation
-navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
-    .then(stream => {
-        videoElement.srcObject = stream;
-        videoElement.play();
-        cameraReady = true;
-        updateStatus();
-    })
-    .catch(err => {
-        statusText.innerText = "Erreur webcam : " + err.message;
-        statusText.style.color = COLOR_DANGER;
-        console.error("Erreur d'accès à la caméra :", err);
-    });
+  function stopCamera() {
+    if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+    state.stream = null;
+  }
 
-// 2. Gestion des événements WebSocket et traçage des erreurs
-ws.onopen = () => {
-    wsOpen = true;
-    updateStatus();
-    sendNextFrame();
-};
-
-ws.onerror = (error) => {
-    console.error("Erreur critique sur le WebSocket :", error);
-    statusText.innerText = "Erreur de liaison réseau avec l'IA.";
-    statusText.style.color = COLOR_DANGER;
-};
-
-ws.onclose = (event) => {
-    console.warn(`WebSocket fermé. Code: ${event.code}, Raison: ${event.reason}`);
-    wsOpen = false;
-    statusText.innerText = `Déconnecté du serveur IA (Code: ${event.code}).`;
-    statusText.style.color = COLOR_DANGER;
-};
-
-ws.onmessage = (event) => {
+  async function startCamera() {
+    stopCamera();
+    placeholder.hidden = false; retryBtn.hidden = true;
+    placeholderText.textContent = 'Activation de la caméra…';
     try {
-        const response = JSON.parse(event.data);
-        drawBoundingBoxes(response.faces);
-
-        waitingForResponse = false;
-        setTimeout(sendNextFrame, 100);
-    } catch (parseError) {
-        console.error("Erreur de décodage JSON de la réponse IA :", parseError);
-        waitingForResponse = false;
+      state.stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' } });
+      video.srcObject = state.stream;
+      await video.play();
+      syncSize();
+      placeholder.hidden = true;
+      scheduleSend(0);
+    } catch (err) {
+      console.error('Caméra :', err);
+      placeholderText.textContent = cameraError(err);
+      retryBtn.hidden = false;
+      setLive('down', 'Caméra indisponible');
     }
-};
+  }
+  retryBtn.addEventListener('click', startCamera);
 
-function sendNextFrame() {
-    if (ws.readyState === WebSocket.OPEN && !waitingForResponse && videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-        waitingForResponse = true;
+  // Canvas = résolution réelle de la vidéo ; conteneur = même ratio -> cadres alignés.
+  function syncSize() {
+    const w = video.videoWidth || 640, h = video.videoHeight || 480;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    if (!document.fullscreenElement) stage.style.aspectRatio = `${w} / ${h}`;
+  }
+  video.addEventListener('loadedmetadata', syncSize);
 
-        captureCanvas.width = videoElement.videoWidth;
-        captureCanvas.height = videoElement.videoHeight;
-        ctxCapture.drawImage(videoElement, 0, 0, captureCanvas.width, captureCanvas.height);
+  // --- WebSocket ------------------------------------------------------------
+  function connect() {
+    clearTimeout(state.reconnectTimer);
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/detect`);
+    state.ws = ws;
+    setLive('warn', 'Connexion à l\'IA…');
 
-        const dataURL = captureCanvas.toDataURL('image/jpeg', 0.6);
-        ws.send(dataURL);
-    } else {
-        setTimeout(sendNextFrame, 200);
-    }
-}
+    ws.onopen = () => {
+      state.wsOpen = true; state.reconnectAttempts = 0;
+      if (!state.paused) setLive('ok', 'Analyse en direct');
+      scheduleSend(0);
+    };
+    ws.onclose = () => {
+      state.wsOpen = false; state.waiting = false;
+      state.reconnectAttempts++;
+      const delay = Math.min(1000 * state.reconnectAttempts, 5000);
+      setLive('down', `IA déconnectée — nouvelle tentative dans ${Math.round(delay / 1000)} s`);
+      state.reconnectTimer = setTimeout(connect, delay);
+    };
+    ws.onerror = () => { /* onclose gère la reconnexion */ };
+    ws.onmessage = ev => {
+      try {
+        const data = JSON.parse(ev.data);
+        const now = performance.now();
+        state.respTimes.push(now);
+        state.respTimes = state.respTimes.filter(t => now - t < 3000);
+        if (!state.paused) handleResult(data);
+      } catch (e) {
+        console.error('Réponse illisible', e);
+      } finally {
+        state.waiting = false;
+        scheduleSend(60);
+      }
+    };
+  }
 
-function drawBoundingBoxes(faces) {
-    ctxOverlay.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  function scheduleSend(delay) {
+    clearTimeout(state.sendTimer);
+    state.sendTimer = setTimeout(sendFrame, delay);
+  }
 
-    if (!faces) return;
+  function sendFrame() {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN || state.waiting || state.paused || document.hidden) return;
+    if (!video.videoWidth || video.readyState < 2) { scheduleSend(200); return; }
+    // Image envoyée en 640 px de large max : suffisant pour la détection, réseau léger.
+    const scale = Math.min(1, 640 / video.videoWidth);
+    capture.width = Math.round(video.videoWidth * scale);
+    capture.height = Math.round(video.videoHeight * scale);
+    captureCtx.drawImage(video, 0, 0, capture.width, capture.height);
+    state.scale = scale;
+    state.waiting = true;
+    state.ws.send(capture.toDataURL('image/jpeg', 0.75));
+  }
 
-    faces.forEach(face => {
-        const [x1, y1, x2, y2] = face.box;
-        const width = x2 - x1;
-        const height = y2 - y1;
+  // --- Résultats ------------------------------------------------------------
+  function handleResult(data) {
+    const faces = (data.faces || []).map(f => scaleFace(f, 1 / (state.scale || 1)));
+    state.lastFaces = faces;
+    draw(faces);
+    renderFaces(faces);
+    faces.filter(f => f.logged).forEach(addEvent);
 
-        // --- Choix de couleur selon le statut (identité + vivacité) ---
-        let color = COLOR_ACCENT;
-        if (face.identity === "FRAUDE DETECTEE") {
-            color = COLOR_DANGER;
-        } else if (face.identity === "Inconnu") {
-            color = COLOR_WARN;
-        } else if (!face.is_real) {
-            color = COLOR_ANALYSIS;
-        }
+    const fps = state.respTimes.length / 3;
+    const known = faces.filter(f => f.identity !== UNKNOWN && f.identity !== SPOOF).length;
+    metrics.textContent = `${faces.length} visage${faces.length > 1 ? 's' : ''} · ${known} reconnu${known > 1 ? 's' : ''}`
+      + (data.processing_ms != null ? ` · ${Math.round(data.processing_ms)} ms · ${fps.toFixed(1)} img/s` : '');
+  }
 
-        // --- Cadre de détection ---
-        ctxOverlay.strokeStyle = color;
-        ctxOverlay.lineWidth = 3;
-        ctxOverlay.strokeRect(x1, y1, width, height);
+  function scaleFace(f, k) {
+    return { ...f, box: f.box.map(v => v * k), kps: (f.kps || []).map(([x, y]) => [x * k, y * k]) };
+  }
 
-        // --- Étiquette identité + score ---
-        ctxOverlay.fillStyle = color;
-        ctxOverlay.fillRect(x1, y2, width, 25);
+  function colorFor(f) {
+    if (f.identity === SPOOF) return C.danger;
+    if (f.identity === UNKNOWN) return C.unknown;
+    return f.is_real ? C.ok : C.pending;
+  }
 
-        const textColor = (color === COLOR_DANGER) ? "#FFFFFF" : "#06251F";
-        ctxOverlay.fillStyle = textColor;
-        ctxOverlay.font = "16px 'Inter', Arial, sans-serif";
-        ctxOverlay.fillText(`${face.identity} (${face.similarity.toFixed(2)})`, x1 + 5, y2 + 18);
+  function label(f) {
+    if (f.identity === SPOOF) return 'FRAUDE';
+    return `${f.identity}  ${Math.round(f.similarity * 100)}%`;
+  }
 
-        // --- Statut de vivacité au-dessus du cadre ---
-        ctxOverlay.fillStyle = color;
-        ctxOverlay.font = "bold 14px 'JetBrains Mono', monospace";
-        ctxOverlay.fillText(face.liveness, x1, y1 - 10);
+  function draw(faces) {
+    syncSize();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const W = canvas.width;
+    // Taille du texte adaptée à l'affichage réel (lisible aussi sur téléphone)
+    const k = canvas.width / Math.max(canvas.clientWidth, 1);
+    const fontPx = Math.round(15 * k), pad = Math.round(6 * k), lh = Math.round(24 * k);
 
-        // --- Points clés du visage (yeux, nez, coins de bouche) ---
-        // Nécessite que le backend inclue "kps" dans la réponse JSON par visage
-        // (liste de 5 paires [x, y]). Si absent, ce bloc ne dessine simplement rien.
-        if (face.kps && Array.isArray(face.kps)) {
-            face.kps.forEach(([kx, ky]) => {
-                ctxOverlay.beginPath();
-                ctxOverlay.arc(kx, ky, 3, 0, 2 * Math.PI);
-                ctxOverlay.fillStyle = COLOR_KEYPOINT;
-                ctxOverlay.fill();
-                ctxOverlay.lineWidth = 1;
-                ctxOverlay.strokeStyle = "#06251F";
-                ctxOverlay.stroke();
-            });
-        }
+    faces.forEach(f => {
+      let [x1, y1, x2, y2] = f.box;
+      if (state.mirrored) [x1, x2] = [W - x2, W - x1];
+      const color = colorFor(f);
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = Math.max(2, 3 * k);
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(x1, y1, x2 - x1, y2 - y1, 6 * k) : ctx.rect(x1, y1, x2 - x1, y2 - y1);
+      ctx.stroke();
+
+      // Nom AU-DESSUS du visage (exigence du sujet)
+      ctx.font = `600 ${fontPx}px Inter, system-ui, sans-serif`;
+      const text = label(f);
+      const tw = ctx.measureText(text).width + pad * 2;
+      let lx = Math.max(0, Math.min(x1, W - tw));
+      let ly = y1 - lh - 4 * k;
+      if (ly < 0) ly = y2 + 4 * k;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(lx, ly, tw, lh, 5 * k) : ctx.rect(lx, ly, tw, lh);
+      ctx.fill();
+      ctx.fillStyle = color === C.danger ? '#fff' : C.ink;
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, lx + pad, ly + lh / 2 + 1);
+
+      // Barre de progression de la vérification de vivacité, sous le cadre
+      if (f.identity !== SPOOF && !f.is_real && f.liveness_progress != null) {
+        const bw = x2 - x1, by = y2 + 6 * k;
+        ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x1, by, bw, 4 * k);
+        ctx.fillStyle = C.pending; ctx.fillRect(x1, by, bw * f.liveness_progress, 4 * k);
+      }
+
+      if (state.showKps) {
+        ctx.fillStyle = C.kp;
+        (f.kps || []).forEach(([x, y]) => {
+          ctx.beginPath();
+          ctx.arc(state.mirrored ? W - x : x, y, 3 * k, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
     });
-}
+  }
+
+  // Liste "Devant la caméra" : mise à jour par piste (pas de clignotement des photos)
+  function displayName(f) {
+    if (f.identity === UNKNOWN) return 'Personne inconnue';
+    if (f.identity === SPOOF) return 'Fraude suspectée';
+    return f.identity;
+  }
+  function metaHtml(f) {
+    const score = `${Math.round(f.similarity * 100)}%`;
+    if (f.identity === SPOOF) return `<span class="badge badge-danger">Photo ou écran détecté</span>`;
+    if (f.identity === UNKNOWN) return `<span>Non enregistré(e) · meilleure ressemblance ${score}</span>`;
+    if (f.is_real) return `<span class="badge badge-ok">Vérifié</span><span>confiance ${score}</span>`;
+    const p = Math.round((f.liveness_progress || 0) * 100);
+    return `<span>Vérification ${p}%</span></div><div class="progress-mini"><span style="width:${p}%"></span>`;
+  }
+  function renderFaces(faces) {
+    faceCount.textContent = faces.length;
+    faceEmpty.hidden = faces.length > 0;
+    const seen = new Set();
+    faces.forEach(f => {
+      const key = String(f.track_id ?? `${f.identity}-${f.box[0]}`);
+      seen.add(key);
+      let li = faceList.querySelector(`[data-key="${key}"]`);
+      if (!li || li.dataset.identity !== f.identity) {
+        const fresh = document.createElement('li');
+        fresh.className = 'face-item';
+        fresh.dataset.key = key;
+        fresh.dataset.identity = f.identity;
+        fresh.innerHTML = `${avatar(f.identity)}<div class="face-info"><span class="face-name">${esc(displayName(f))}</span><div class="face-meta"></div></div>`;
+        li ? li.replaceWith(fresh) : faceList.appendChild(fresh);
+        li = fresh;
+      }
+      const meta = li.querySelector('.face-info');
+      const html = `<span class="face-name">${esc(displayName(f))}</span><div class="face-meta">${metaHtml(f)}</div>`;
+      if (meta.dataset.html !== html) { meta.innerHTML = html; meta.dataset.html = html; }
+    });
+    faceList.querySelectorAll('.face-item').forEach(li => { if (!seen.has(li.dataset.key)) li.remove(); });
+  }
+
+  // Journal + bannière de bienvenue
+  let bannerTimer = null;
+  function addEvent(f, { fromHistory = false } = {}) {
+    const time = fromHistory ? f.timestamp : new Date().toISOString();
+    const li = document.createElement('li');
+    li.className = 'event-item';
+    li.innerHTML = `${avatar(f.identity)}<div class="face-info"><span class="face-name">${esc(f.identity)}</span>
+      <span class="event-time">${fmtTime(time)} · ${Math.round(f.similarity * 100)}%</span></div>`;
+    fromHistory ? eventList.appendChild(li) : eventList.prepend(li);
+    while (eventList.children.length > 12) eventList.lastElementChild.remove();
+    eventEmpty.hidden = true;
+    if (fromHistory) return;
+
+    $('welcome-avatar').innerHTML = avatar(f.identity);
+    $('welcome-name').textContent = `Bonjour ${f.identity} !`;
+    $('welcome-sub').textContent = `Pointage enregistré à ${fmtTime(time)}`;
+    banner.classList.add('show');
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => banner.classList.remove('show'), 3500);
+  }
+
+  async function loadTodayEvents() {
+    try {
+      const r = await fetch('/api/logs?limit=40');
+      const { logs } = await r.json();
+      logs.filter(l => isToday(l.timestamp) && !/SPOOF|FRAUDE/i.test(l.liveness_status || ''))
+        .slice(0, 12)
+        .forEach(l => addEvent({ identity: l.user_name, similarity: Number(l.confidence_score) || 0, timestamp: l.timestamp }, { fromHistory: true }));
+    } catch { /* le journal se remplira en direct */ }
+  }
+
+  // --- Contrôles --------------------------------------------------------------
+  function setPaused(p) {
+    state.paused = p;
+    btnPause.setAttribute('aria-pressed', String(p));
+    btnPause.querySelector('use').setAttribute('href', p ? '#i-play' : '#i-pause');
+    btnPause.setAttribute('aria-label', p ? 'Reprendre' : 'Mettre en pause');
+    if (p) { ctx.clearRect(0, 0, canvas.width, canvas.height); setLive('paused', 'En pause'); video.pause(); }
+    else { video.play(); if (state.wsOpen) setLive('ok', 'Analyse en direct'); scheduleSend(0); }
+  }
+  function setMirror(m) {
+    state.mirrored = m; savePref('mirror', m);
+    stage.classList.toggle('mirrored', m);
+    btnMirror.setAttribute('aria-pressed', String(m));
+    draw(state.lastFaces);
+  }
+  function setKps(v) {
+    state.showKps = v; savePref('kps', v);
+    btnKps.setAttribute('aria-pressed', String(v));
+    draw(state.lastFaces);
+  }
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (stageCard.requestFullscreen) stageCard.requestFullscreen().catch(() => toast('Plein écran non disponible.', 'warn'));
+  }
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement) stage.style.aspectRatio = '';  // la vidéo remplit l'écran
+    syncSize();
+    draw(state.lastFaces);
+  });
+
+  btnPause.addEventListener('click', () => setPaused(!state.paused));
+  btnMirror.addEventListener('click', () => setMirror(!state.mirrored));
+  btnKps.addEventListener('click', () => setKps(!state.showKps));
+  btnFull.addEventListener('click', toggleFullscreen);
+  document.addEventListener('keydown', e => {
+    if (e.target.closest('input, textarea, button') && e.key === ' ') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === ' ') { e.preventDefault(); setPaused(!state.paused); }
+    else if (k === 'm') setMirror(!state.mirrored);
+    else if (k === 'p') setKps(!state.showKps);
+    else if (k === 'f') toggleFullscreen();
+  });
+
+  // Onglet masqué : on arrête d'envoyer des images (économie CPU), reprise automatique.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleSend(0); });
+  // Libère la webcam en quittant la page (sinon la page Enrôler ne peut pas l'ouvrir).
+  window.addEventListener('pagehide', stopCamera);
+
+  // --- Démarrage ----------------------------------------------------------------
+  setMirror(state.mirrored);
+  setKps(state.showKps);
+  loadTodayEvents();
+  startCamera();
+  connect();
+})();

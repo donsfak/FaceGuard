@@ -93,8 +93,6 @@ python src/04_evaluate.py
 Tests par condition (face, tête tournée, éclairage, plusieurs personnes, inconnus) :
 suivre [`docs/protocole_tests.md`](docs/protocole_tests.md), puis relancer `04_evaluate.py`.
 
-Préparation de l'oral : [`docs/fiche_oral.md`](docs/fiche_oral.md) (réponses aux questions de la partie 8 du sujet).
-
 ### Plateforme web
 
 ```bash

@@ -31,8 +31,8 @@
       </div>
     </div>
     <div class="person-foot">
-      {% if person.count < 5 %}
-      <span class="badge badge-warn" title="Moins de 5 photos : la reconnaissance sera moins fiable. Ré-enrôlez cette personne.">
+      {% if person.count < 8 %}
+      <span class="badge badge-warn" title="Moins de 8 photos : la reconnaissance sera moins fiable. Complétez son profil depuis la page Enrôler, avec le même nom.">
         <svg class="icon"><use href="#i-alert"/></svg>{{ person.count }} photo{{ 's' if person.count > 1 }} seulement</span>
       {% else %}
       <span class="badge badge-ok" title="Nombre d'embeddings (photos exploitables) dans la base"><svg class="icon"><use href="#i-check"/></svg>{{ person.count }} photos</span>

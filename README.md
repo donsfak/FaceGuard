@@ -104,8 +104,24 @@ uvicorn app:app --host 127.0.0.1 --port 8001
 |---|---|
 | `/` | tableau de bord : pointages, présents du jour, tentatives suspectes |
 | `/scanner` | reconnaissance en direct (webcam du navigateur) |
-| `/register` | ajout d'une personne en 5 captures |
+| `/register` | enrôlement d'une personne : 8 à 10 photos, caméra guidée et/ou import |
 | `/people` | personnes connues, retrait d'une personne |
+
+**Enrôlement** : il faut entre **8 et 10 photos** par personne, obtenues de deux façons
+combinables :
+
+- **caméra** : 8 poses guidées (face, gauche, droite, menton haut, menton bas, sourire,
+  tête penchée, plus proche), plus 2 facultatives. Chaque photo n'est prise que si le visage
+  est seul, assez grand, net et éclairé ;
+- **import** : photos choisies dans ses fichiers (JPEG, PNG ou WebP). Elles sont réduites
+  dans le navigateur puis vérifiées une par une ; une photo sans visage, floue, trop sombre
+  ou avec plusieurs visages de taille comparable est refusée avec la raison (une personne
+  loin en arrière-plan est tolérée).
+
+Chaque photo peut être retirée avant l'enregistrement. Le serveur vérifie ensuite que les
+photos montrent toutes la même personne (au moins 6 exploitables) et que ce visage n'est
+pas déjà enregistré sous un autre nom. Saisir le nom d'une personne existante complète son
+profil, après vérification que les photos lui ressemblent.
 
 Supabase est **optionnel** : sans `web/.env`, les pointages sont enregistrés dans
 `docs/recognition_log.csv` (ils y sont toujours copiés, même avec Supabase). Pour l'activer :
@@ -152,7 +168,6 @@ dataset/<personne>/     photos de référence (non versionnées : données perso
 dataset_test_externe/   photos prises un autre jour, pour l'évaluation
 models/                 base d'embeddings (.npz)
 docs/                   rapport d'évaluation, graphiques, journal des pointages
-legacy/                 anciennes versions (dlib, Flask), conservées pour l'historique
 ```
 
 ## Qualité du dataset : ce que l'analyse a montré

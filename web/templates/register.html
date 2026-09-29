@@ -1,175 +1,112 @@
 {% extends "base.html" %}
-{% block title %}Ajouter une personne — FaceGuard{% endblock %}
+{% block title %}Enrôler une personne — FaceGuard{% endblock %}
 {% block nav_register %}active{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/register.css?v=4">
+{% endblock %}
 
 {% block content %}
 <header class="page-header">
-    <div>
-        <h1>Enrôlement d'une personne</h1>
-        <p class="page-sub">5 captures automatiques suffisent pour indexer un nouveau profil</p>
-    </div>
+  <div>
+    <h1>Enrôler une personne</h1>
+    <p class="page-sub">5 photos guidées, sous des angles différents, pour une reconnaissance fiable.</p>
+  </div>
 </header>
 
 <div class="enroll-layout">
-    <div class="card enroll-card">
-        <label class="form-field">
-            <span class="form-label">Nom complet</span>
-            <input type="text" id="name" placeholder="ex : Jean Kouadio" required>
-        </label>
+  <!-- Caméra -->
+  <section class="card stage-card" aria-label="Caméra">
+    <div class="stage mirrored" id="stage">
+      <video id="video" autoplay playsinline muted></video>
+      <div class="face-guide" id="face-guide" aria-hidden="true"></div>
+      <div class="flash" id="flash" aria-hidden="true"></div>
 
-        <div class="form-field">
-            <span class="form-label">Flux de la caméra</span>
-            <div class="camera-box">
-                <video id="video" autoplay playsinline muted></video>
-                <span class="camera-placeholder" id="camera-placeholder">Activation de la caméra...</span>
-                <span class="corner corner-tl"></span>
-                <span class="corner corner-tr"></span>
-                <span class="corner corner-bl"></span>
-                <span class="corner corner-br"></span>
-                <button type="button" id="switch-camera" class="camera-switch-btn" title="Changer de caméra">⟳</button>
-                <canvas id="canvas" style="display:none;"></canvas>
-            </div>
-        </div>
-
-        <div class="progress-track" id="progress-track" style="display:none;">
-            <div class="progress-fill" id="progress-fill"></div>
-        </div>
-
-        <button type="button" id="startBtn" class="btn btn-primary btn-block">
-            🚀 Lancer les 5 captures automatiques
+      <div class="stage-placeholder" id="stage-placeholder">
+        <svg class="icon" aria-hidden="true"><use href="#i-camera"/></svg>
+        <p id="placeholder-text">Activation de la caméra…</p>
+        <button type="button" class="btn btn-secondary" id="camera-retry" hidden>
+          <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Réessayer
         </button>
+      </div>
 
-        <p id="message" class="enroll-message"></p>
-    </div>
+      <div class="quality-pill" id="quality-pill" role="status" aria-live="polite">
+        <span class="status-dot"></span><span id="quality-text">Placez votre visage dans l'ovale</span>
+      </div>
 
-    <div class="card thumbs-card">
-        <span class="form-label">Captures</span>
-        <div class="thumbs-grid" id="thumbs-grid">
-            {% for i in range(5) %}
-            <div class="thumb-slot" id="slot-{{ i }}">
-                <span class="thumb-slot-number">{{ i + 1 }}</span>
-            </div>
-            {% endfor %}
-        </div>
-        <p class="form-hint">Chaque vignette se remplit au fur et à mesure des captures.</p>
+      <div class="instruction" id="instruction" hidden>
+        <span class="instruction-step" id="instruction-step">Photo 1 sur 5</span>
+        <strong class="instruction-text" id="instruction-text">Regardez la caméra</strong>
+        <span class="countdown" id="countdown" aria-hidden="true"></span>
+      </div>
     </div>
+    <div class="stage-toolbar">
+      <button type="button" class="btn btn-secondary btn-icon" id="switch-camera" hidden title="Changer de caméra" aria-label="Changer de caméra">
+        <svg class="icon"><use href="#i-switch"/></svg>
+      </button>
+      <span class="hint">Conseil : visage bien éclairé, de face, sans lunettes de soleil ni casquette.</span>
+    </div>
+  </section>
+
+  <!-- Formulaire -->
+  <section class="card enroll-panel" aria-label="Informations et captures">
+    <ol class="steps" aria-label="Étapes">
+      <li class="step active" data-step="info"><span>1</span>Identité</li>
+      <li class="step" data-step="capture"><span>2</span>Photos</li>
+      <li class="step" data-step="review"><span>3</span>Validation</li>
+    </ol>
+
+    <form id="enroll-form" class="enroll-body" novalidate>
+      <div class="field" id="name-field">
+        <div class="label-row"><label class="label" for="name">Nom de la personne</label><span class="hint"><span id="name-len">0</span>/50</span></div>
+        <input class="input" type="text" id="name" name="name" placeholder="ex : Jean Kouadio" autocomplete="off" maxlength="50" required>
+        <span class="field-error" id="name-error" aria-live="polite"></span>
+      </div>
+
+      <label class="checkbox">
+        <input type="checkbox" id="consent" required>
+        <span>Cette personne a donné son accord pour l'enregistrement de son visage dans le cadre de ce projet pédagogique.</span>
+      </label>
+
+      <div class="alert" id="alert" role="alert" hidden></div>
+
+      <div>
+        <div class="label-row"><span class="label">Photos</span><span class="hint" id="capture-count">0/5</span></div>
+        <ul class="thumbs" id="thumbs"></ul>
+      </div>
+
+      <div class="enroll-actions" id="actions-idle">
+        <button type="submit" class="btn btn-primary btn-lg btn-block" id="start-btn" disabled>
+          <svg class="icon"><use href="#i-camera"/></svg>Commencer les photos
+        </button>
+        <p class="hint center" id="start-hint">Saisissez un nom et cochez l'accord pour commencer.</p>
+      </div>
+      <div class="enroll-actions" id="actions-capturing" hidden>
+        <button type="button" class="btn btn-secondary btn-block" id="cancel-btn">Annuler</button>
+      </div>
+      <div class="enroll-actions" id="actions-review" hidden>
+        <button type="button" class="btn btn-primary btn-lg btn-block" id="save-btn">
+          <svg class="icon"><use href="#i-check"/></svg><span id="save-label">Enregistrer</span>
+        </button>
+        <button type="button" class="btn btn-ghost btn-block" id="restart-btn">
+          <svg class="icon"><use href="#i-refresh"/></svg>Tout recommencer
+        </button>
+      </div>
+    </form>
+
+    <div class="enroll-success" id="success" hidden>
+      <div class="success-mark"><svg class="icon icon-lg"><use href="#i-check"/></svg></div>
+      <h2 id="success-title">Personne enregistrée</h2>
+      <p class="muted" id="success-text"></p>
+      <div class="success-actions">
+        <a href="/scanner" class="btn btn-primary btn-lg btn-block"><svg class="icon"><use href="#i-scan"/></svg>Tester dans le scanner</a>
+        <button type="button" class="btn btn-secondary btn-block" id="another-btn"><svg class="icon"><use href="#i-user-plus"/></svg>Enrôler une autre personne</button>
+      </div>
+    </div>
+  </section>
 </div>
+{% endblock %}
 
-<script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const startBtn = document.getElementById('startBtn');
-const nameInput = document.getElementById('name');
-const message = document.getElementById('message');
-const placeholder = document.getElementById('camera-placeholder');
-const switchCameraBtn = document.getElementById('switch-camera');
-const progressTrack = document.getElementById('progress-track');
-const progressFill = document.getElementById('progress-fill');
-
-let stream = null;
-let facingMode = "user";
-const TOTAL_CAPTURES = 5;
-
-async function startCamera() {
-    try {
-        if (stream) stream.getTracks().forEach(t => t.stop());
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode, width: 640, height: 480 } });
-        video.srcObject = stream;
-        placeholder.style.display = "none";
-    } catch (err) {
-        placeholder.style.display = "block";
-        placeholder.textContent = "Erreur d'accès à la caméra : " + err.message;
-        message.className = "enroll-message message-error";
-        message.textContent = "Vérifiez que la caméra est autorisée pour ce site.";
-    }
-}
-
-switchCameraBtn.addEventListener('click', () => {
-    facingMode = facingMode === "user" ? "environment" : "user";
-    startCamera();
-});
-
-startCamera();
-
-startBtn.addEventListener('click', async () => {
-    const name = nameInput.value.trim();
-    if (!name) {
-        message.className = "enroll-message message-error";
-        message.textContent = "Veuillez saisir un nom complet avant de lancer les captures.";
-        nameInput.focus();
-        return;
-    }
-    if (!stream) {
-        message.className = "enroll-message message-error";
-        message.textContent = "La caméra n'est pas active.";
-        return;
-    }
-
-    startBtn.setAttribute('disabled', 'true');
-    nameInput.setAttribute('disabled', 'true');
-    progressTrack.style.display = "block";
-
-    document.querySelectorAll('.thumb-slot').forEach(slot => {
-        slot.classList.remove('thumb-filled');
-        slot.style.backgroundImage = "";
-    });
-
-    const blobs = [];
-    const ctx = canvas.getContext('2d');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    for (let i = 0; i < TOTAL_CAPTURES; i++) {
-        message.className = "enroll-message message-progress";
-        message.textContent = `📸 Capture ${i + 1} sur ${TOTAL_CAPTURES} en cours... (bougez légèrement la tête)`;
-        progressFill.style.width = `${((i) / TOTAL_CAPTURES) * 100}%`;
-
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-
-        const slot = document.getElementById(`slot-${i}`);
-        slot.style.backgroundImage = `url(${dataUrl})`;
-        slot.classList.add('thumb-filled');
-
-        await new Promise(resolve => {
-            canvas.toBlob((blob) => {
-                blobs.push(blob);
-                progressFill.style.width = `${((i + 1) / TOTAL_CAPTURES) * 100}%`;
-                setTimeout(resolve, 800);
-            }, 'image/jpeg', 0.9);
-        });
-    }
-
-    message.className = "enroll-message message-progress";
-    message.textContent = "Envoi des captures et extraction des embeddings par l'IA...";
-
-    const formData = new FormData();
-    formData.append('name', name);
-    blobs.forEach((blob, index) => {
-        formData.append('files', blob, `capture_${index}.jpg`);
-    });
-
-    try {
-        const response = await registerUserAPI(formData);
-        message.className = "enroll-message message-success";
-        message.textContent = "✓ " + response.message;
-        nameInput.value = "";
-        nameInput.removeAttribute('disabled');
-    } catch (err) {
-        message.className = "enroll-message message-error";
-        message.textContent = "Erreur : " + err.message;
-        nameInput.removeAttribute('disabled');
-    } finally {
-        startBtn.removeAttribute('disabled');
-        progressTrack.style.display = "none";
-    }
-});
-
-async function registerUserAPI(formData) {
-    const response = await fetch('/register-user', { method: 'POST', body: formData });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "Erreur serveur");
-    return result;
-}
-</script>
+{% block extra_js %}
+<script src="/static/js/register.js?v=4"></script>
 {% endblock %}

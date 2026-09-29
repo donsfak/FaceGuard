@@ -1,20 +1,30 @@
-# Fichiers d'environnement et secrets
+# Secrets
 .env
+web/.env
 
-# Dossiers de données lourds et datasets
-dataset_test_externe/
-*.mp4
-*.avi
+# Données personnelles (visages) : ne jamais les publier sur GitHub
 dataset/
+dataset_test_externe/
+dataset_archive/
+docs/unknown_faces/
+conditions/
+docs/recognition_log*.csv
+models/*.npz
+models/*.pickle
+
+# Vidéos
 *.mp4
 *.avi
 
-# Fichiers système et caches Python
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 .venv/
-env/
 venv/
+env/
+
+# Système
 .DS_Store
 *.log
+*.npz.tmp

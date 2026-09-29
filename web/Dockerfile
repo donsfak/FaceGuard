@@ -1,27 +1,25 @@
+# Image de la plateforme web. À construire depuis la RACINE du projet :
+#   docker build -t faceguard -f web/Dockerfile .
+#   docker run -p 8001:8001 --env-file web/.env -v "$PWD/models:/app/models" -v "$PWD/dataset:/app/dataset" faceguard
+FROM python:3.11-slim
 
-FROM python:3.10-slim
-
-WORKDIR /app
-
-# Installation des dépendances système pour OpenCV
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libgl1 \
-    libglib2.0-0 \
+# build-essential : compilation de l'extension C++ d'insightface
+# libgl1 / libglib2.0-0 : dépendances système d'OpenCV
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copie des requirements depuis le dossier web
-COPY web/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+WORKDIR /app
+COPY web/requirements.txt /app/web/requirements.txt
+RUN pip install --no-cache-dir -r /app/web/requirements.txt
 
-# Copie de tout le code source de l'application web
-COPY web/ .
+# Pré-téléchargement des modèles buffalo_l dans l'image (sinon ~280 Mo au 1er démarrage)
+RUN python -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l', allowed_modules=['detection','recognition'], providers=['CPUExecutionProvider'])"
 
-# Copie des modèles d'IA situés à la racine du projet
-COPY models /models
+COPY core /app/core
+COPY web /app/web
+COPY models /app/models
 
-# Exposition du port 8001
+WORKDIR /app/web
 EXPOSE 8001
-
-# Lancement d'Uvicorn sur le port 8001
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]x
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8001"]

@@ -1,35 +1,76 @@
 {% extends "base.html" %}
 {% block title %}Personnes — FaceGuard{% endblock %}
+{% block nav_people %}active{% endblock %}
 
 {% block content %}
 <header class="page-header">
-    <div>
-        <h1>Personnes enregistrées</h1>
-        <p class="page-sub">{{ people|length }} personne(s) dans la base de reconnaissance</p>
+  <div>
+    <h1>Personnes enregistrées</h1>
+    <p class="page-sub"><span id="people-count">{{ people|length }}</span> personne(s) reconnaissable(s) par le système.</p>
+  </div>
+  <div class="header-actions">
+    {% if people %}
+    <div class="input-icon" style="width:240px;max-width:100%">
+      <svg class="icon"><use href="#i-search"/></svg>
+      <input type="search" class="input" id="people-search" placeholder="Rechercher" aria-label="Rechercher une personne" style="min-height:40px">
     </div>
-    <a href="{{ url_for('people_add') }}" class="btn btn-primary">+ Ajouter une personne</a>
+    {% endif %}
+    <a href="/register" class="btn btn-primary"><svg class="icon"><use href="#i-user-plus"/></svg>Enrôler une personne</a>
+  </div>
 </header>
 
 {% if people %}
-<div class="people-grid">
-    {% for person in people %}
-    <div class="person-card">
-        <div class="person-avatar">{{ person.name[0]|upper }}</div>
-        <div class="person-info">
-            <span class="person-name">{{ person.name }}</span>
-            <span class="person-count">{{ person.photo_count }} photo(s)</span>
-        </div>
-        <form method="POST" action="{{ url_for('people_delete', name=person.name) }}"
-              onsubmit="return confirm('Supprimer {{ person.name }} de la base de reconnaissance ?');">
-            <button type="submit" class="btn btn-danger-ghost">Supprimer</button>
-        </form>
+<div class="people-grid" id="people-grid">
+  {% for person in people %}
+  <article class="card person-card" data-name="{{ person.name|lower }}">
+    <div class="person-top">
+      <span class="avatar avatar-lg" aria-hidden="true">{{ person.name[0]|upper }}{% if person.has_photo %}<img src="/people/{{ person.name|urlencode }}/photo" alt="" loading="lazy" onerror="this.remove()">{% endif %}</span>
+      <div class="person-info">
+        <span class="person-name">{{ person.name }}</span>
+        <span class="person-meta" data-last-seen="{{ person.last_seen or '' }}">{% if person.last_seen %}Vu(e) {{ person.last_seen }}{% else %}Jamais pointé(e){% endif %}</span>
+      </div>
     </div>
-    {% endfor %}
+    <div class="person-foot">
+      {% if person.count < 5 %}
+      <span class="badge badge-warn" title="Moins de 5 photos : la reconnaissance sera moins fiable. Ré-enrôlez cette personne.">
+        <svg class="icon"><use href="#i-alert"/></svg>{{ person.count }} photo{{ 's' if person.count > 1 }} seulement</span>
+      {% else %}
+      <span class="badge badge-ok" title="Nombre d'embeddings (photos exploitables) dans la base"><svg class="icon"><use href="#i-check"/></svg>{{ person.count }} photos</span>
+      {% endif %}
+      <button type="button" class="btn btn-danger-ghost" data-delete="{{ person.name }}" style="min-height:34px;padding:6px 12px">
+        <svg class="icon"><use href="#i-trash"/></svg>Retirer
+      </button>
+    </div>
+  </article>
+  {% endfor %}
 </div>
-{% else %}
-<div class="empty-state">
-    <p>Aucune personne enregistrée pour l'instant.</p>
-    <a href="{{ url_for('people_add') }}" class="btn btn-primary">Ajouter la première personne</a>
+<div class="card empty" id="people-noresult" hidden>
+  <svg class="icon"><use href="#i-search"/></svg><strong>Aucune personne ne correspond</strong>
 </div>
 {% endif %}
+
+<div class="card empty" id="people-empty" {% if people %}hidden{% endif %}>
+  <svg class="icon"><use href="#i-users"/></svg>
+  <strong>Aucune personne enregistrée</strong>
+  <span>Enrôlez une première personne pour que le scanner puisse la reconnaître.</span>
+  <a href="/register" class="btn btn-primary"><svg class="icon"><use href="#i-user-plus"/></svg>Enrôler une personne</a>
+</div>
+
+<dialog class="modal" id="delete-dialog" aria-labelledby="delete-title">
+  <form method="dialog">
+    <div class="modal-body">
+      <h2 id="delete-title">Retirer <span id="delete-name"></span> ?</h2>
+      <p class="muted">Cette personne ne sera plus reconnue par le scanner. Ses photos sont conservées dans
+        <span class="mono">dataset_archive/</span> et son historique de pointages reste visible.</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" value="cancel">Annuler</button>
+      <button class="btn btn-danger" value="confirm" id="delete-confirm"><svg class="icon"><use href="#i-trash"/></svg>Retirer</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/people.js?v=4"></script>
 {% endblock %}

@@ -1,42 +1,88 @@
-
-
-
-
 {% extends "base.html" %}
-{% block title %}Scanner live — FaceGuard{% endblock %}
+{% block title %}Scanner — FaceGuard{% endblock %}
 {% block nav_scanner %}active{% endblock %}
 
 {% block content %}
 <header class="page-header">
-    <div>
-        <h1>Terminal de pointage IA</h1>
-        <p class="page-sub">Scanner de reconnaissance faciale en temps réel</p>
-    </div>
-    <a href="/" class="btn btn-secondary">← Retour au tableau de bord</a>
+  <div>
+    <h1>Scanner en direct</h1>
+    <p class="page-sub">Placez-vous face à la caméra : le pointage est enregistré automatiquement.</p>
+  </div>
 </header>
 
 <div class="scanner-layout">
-    <div class="card scanner-card">
-        <div class="camera-container" id="camera-container">
-            <!-- IDs, dimensions et positionnement inchangés : camera.js en dépend -->
-            <video id="videoElement" autoplay playsinline muted></video>
-            <canvas id="overlayCanvas" width="640" height="480"></canvas>
+  <section class="card stage-card" id="stage-card" aria-label="Flux vidéo analysé">
+    <div class="stage mirrored" id="stage">
+      <video id="videoElement" autoplay playsinline muted></video>
+      <canvas id="overlayCanvas" aria-hidden="true"></canvas>
 
-            <!-- Habillage purement visuel, sans incidence sur les coordonnées de camera.js -->
-            <span class="corner corner-tl"></span>
-            <span class="corner corner-tr"></span>
-            <span class="corner corner-bl"></span>
-            <span class="corner corner-br"></span>
-            <span class="live-badge"><span class="live-dot"></span> LIVE</span>
-        </div>
+      <div class="stage-placeholder" id="stage-placeholder">
+        <svg class="icon" aria-hidden="true"><use href="#i-camera"/></svg>
+        <p id="placeholder-text">Activation de la caméra…</p>
+        <button type="button" class="btn btn-secondary" id="camera-retry" hidden>
+          <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Réessayer
+        </button>
+      </div>
 
-        <div class="status-panel">
-            <span class="status-label">Statut :</span>
-            <p id="status" class="status-text">Initialisation de la caméra...</p>
-        </div>
+      <span class="corner corner-tl"></span><span class="corner corner-tr"></span>
+      <span class="corner corner-bl"></span><span class="corner corner-br"></span>
+
+      <div class="live-pill" id="live-pill" role="status" aria-live="polite">
+        <span class="status-dot"></span><span id="live-text">Connexion…</span>
+      </div>
+
+      <div class="welcome-banner" id="welcome-banner" aria-live="assertive">
+        <span id="welcome-avatar"></span>
+        <div><strong id="welcome-name"></strong><span id="welcome-sub">Pointage enregistré</span></div>
+      </div>
     </div>
-</div>
 
-<script src="/static/camera.js?v=2
-"></script>
+    <div class="stage-toolbar">
+      <button type="button" class="btn btn-secondary btn-icon" id="btn-pause" aria-pressed="false" title="Pause (Espace)" aria-label="Mettre en pause">
+        <svg class="icon"><use href="#i-pause"/></svg>
+      </button>
+      <button type="button" class="btn btn-secondary btn-icon" id="btn-mirror" aria-pressed="true" title="Effet miroir (M)" aria-label="Effet miroir">
+        <svg class="icon"><use href="#i-flip"/></svg>
+      </button>
+      <button type="button" class="btn btn-secondary btn-icon" id="btn-kps" aria-pressed="true" title="Points du visage (P)" aria-label="Afficher les points du visage">
+        <svg class="icon"><use href="#i-dots"/></svg>
+      </button>
+      <button type="button" class="btn btn-secondary btn-icon" id="btn-fullscreen" title="Plein écran (F)" aria-label="Plein écran">
+        <svg class="icon"><use href="#i-expand"/></svg>
+      </button>
+      <span class="spacer"></span>
+      <span class="stage-metrics" id="stage-metrics">—</span>
+    </div>
+    <div class="legend" aria-label="Légende des couleurs">
+      <span><i style="background:#2DD4BF"></i>Reconnu et vérifié</span>
+      <span><i style="background:#60A5FA"></i>Vérification en cours</span>
+      <span><i style="background:#F59E0B"></i>Inconnu</span>
+      <span><i style="background:#EF4444"></i>Fraude suspectée</span>
+    </div>
+  </section>
+
+  <aside class="side-panel">
+    <section class="card" aria-labelledby="faces-title">
+      <div class="card-header">
+        <h2 id="faces-title">Devant la caméra</h2>
+        <span class="count-badge" id="face-count">0</span>
+      </div>
+      <ul class="face-list" id="face-list" aria-live="polite"></ul>
+      <p class="panel-empty" id="face-empty">Aucun visage détecté pour l'instant.</p>
+    </section>
+
+    <section class="card" aria-labelledby="events-title">
+      <div class="card-header">
+        <h2 id="events-title">Pointages du jour</h2>
+        <a class="btn btn-ghost" href="/" style="min-height:32px;padding:4px 10px;font-size:13px">Tout voir</a>
+      </div>
+      <ul class="event-list" id="event-list"></ul>
+      <p class="panel-empty" id="event-empty">Aucun pointage aujourd'hui.</p>
+    </section>
+  </aside>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/camera.js?v=4"></script>
 {% endblock %}

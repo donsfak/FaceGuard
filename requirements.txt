@@ -1,17 +1,13 @@
+# Scripts d'IA (src/) : capture, encodage, reconnaissance webcam, évaluation
+# Installation : pip install -r requirements.txt
+#
+# NB : "cv2" n'est PAS un paquet pip (c'était l'erreur qui faisait échouer
+# l'installation) ; OpenCV s'installe via opencv-python.
+opencv-python>=4.8          # capture webcam + fenêtres d'affichage (cv2.imshow)
+insightface>=0.7.3          # SCRFD (détection) + ArcFace (embeddings 512-D)
+onnxruntime>=1.16           # moteur d'exécution des modèles InsightFace (CPU)
+faiss-cpu>=1.7.4            # recherche des plus proches voisins
+numpy>=1.24
+matplotlib>=3.7             # graphiques de src/04_evaluate.py
 
-# Stack InsightFace (SCRFD + ArcFace) — remplace dlib/face_recognition
-fastapi
-uvicorn
-supabase
-websockets
-opencv-python-headless
-faiss-cpu
-insightface
-onnxruntime
-numpy
-python-dotenv
-
-# Plateforme web
-flask==3.0.3
-
-
+# Pour la plateforme web : pip install -r web/requirements.txt
